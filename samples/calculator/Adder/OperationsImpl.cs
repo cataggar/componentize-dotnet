@@ -18,10 +18,53 @@ public class OperationsImpl : IOperations
         if (string.IsNullOrWhiteSpace(token)) return "{\"error\":\"missing-token\"}";
         try
         {
+            token = token.Trim();
+            if (token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Strip any existing prefix to avoid double Bearer
+                token = token.Substring(7).Trim();
+            }
+            // Basic sanity checks
+            if (token.Length < 20) return "{\"error\":\"token-too-short\"}"; // Very unlikely a real Azure token
+            foreach (var ch in token)
+            {
+                if (ch <= 31 || ch == 127) return "{\"error\":\"token-control-chars\"}";
+            }
+
             var url = $"https://management.azure.com/subscriptions/{subscription}/providers/Microsoft.AVS/privateClouds?api-version=2024-09-01";
-            var headers = new ITypes.Fields();
-            headers.Set("authorization", new System.Collections.Generic.List<byte[]>(new[] { System.Text.Encoding.UTF8.GetBytes($"Bearer {token}") }));
-            headers.Set("accept", new System.Collections.Generic.List<byte[]>(new[] { System.Text.Encoding.UTF8.GetBytes("application/json") }));
+
+            // Build headers in one call so we can catch header errors explicitly
+            var headerEntries = new System.Collections.Generic.List<(string, byte[])>
+            {
+                ("authorization", System.Text.Encoding.UTF8.GetBytes($"Bearer {token}")),
+                ("accept", System.Text.Encoding.UTF8.GetBytes("application/json")),
+                ("user-agent", System.Text.Encoding.UTF8.GetBytes("componentize-dotnet-sample/1.0"))
+            };
+            // Debug: print header names and values
+            var debugHeaders = new System.Text.StringBuilder();
+            debugHeaders.Append("[\n");
+            foreach (var (name, value) in headerEntries)
+            {
+                debugHeaders.Append($"  {{ \"name\": \"{Escape(name)}\", \"value\": \"{Escape(System.Text.Encoding.UTF8.GetString(value))}\" }},\n");
+            }
+            debugHeaders.Append("]");
+
+            ITypes.Fields headers;
+            try
+            {
+                headers = ITypes.Fields.FromList(headerEntries);
+            }
+            catch (WitException<ITypes.HeaderError> hex)
+            {
+                var detail = hex.TypedValue.Tag switch
+                {
+                    ITypes.HeaderError.Tags.Forbidden => "forbidden",
+                    ITypes.HeaderError.Tags.InvalidSyntax => "invalid-syntax",
+                    ITypes.HeaderError.Tags.Immutable => "immutable",
+                    _ => "unknown"
+                };
+                return $"{{\"error\":\"header-build\",\"detail\":\"{detail}\",\"debugHeaders\":{EscapeForJson(debugHeaders.ToString())}}}";
+            }
 
             var req = new ITypes.OutgoingRequest(headers);
             req.SetMethod(ITypes.Method.Get());
@@ -88,7 +131,26 @@ public class OperationsImpl : IOperations
                 future.Dispose();
             }
 
-            return body;
+            if (status >= 200 && status < 300)
+            {
+                return body;
+            }
+            else
+            {
+                // Return structured error including status code
+                return $"{{\"error\":\"http-status\",\"status\":{status},\"body\":{EscapeForJson(body)} }}";
+            }
+        }
+        catch (WitException<ITypes.HeaderError> wex)
+        {
+            var tag = wex.TypedValue.Tag switch
+            {
+                ITypes.HeaderError.Tags.Forbidden => "forbidden",
+                ITypes.HeaderError.Tags.InvalidSyntax => "invalid-syntax",
+                ITypes.HeaderError.Tags.Immutable => "immutable",
+                _ => "unknown"
+            };
+            return $"{{\"error\":\"header\",\"detail\":\"{tag}\"}}";
         }
         catch (Exception ex)
         {
@@ -97,4 +159,8 @@ public class OperationsImpl : IOperations
     }
 
     private static string Escape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    private static string EscapeForJson(string s)
+    {
+        return "\"" + Escape(s) + "\"";
+    }
 }
