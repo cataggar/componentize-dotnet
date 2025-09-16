@@ -21,7 +21,9 @@
     </ItemGroup>
 
     <ItemGroup>
-      <Wit Update="calculator.wit" World="computer" />
+      <!-- <Wit Update="calculator.wit" World="computer" /> -->
+        <Wit Remove="**\*.wit"  />
+        <Wit Include="wit" World="computer" /> 
     </ItemGroup>
  
 </Project>
