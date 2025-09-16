@@ -1,0 +1,6 @@
+package example:calculator;
+
+world computer {
+  export add: func(left: s32, right: s32) -> s32;
+  export to-upper: func(input: string) -> string;
+}
