@@ -5,7 +5,7 @@ interface operations {
 
   to-upper: func(input: string) -> string;
 
-  get-private-clouds: func(subscription: string, token: string) -> string;
+  get-private-clouds: func(subscription: string) -> string;
 }
 
 world computer {

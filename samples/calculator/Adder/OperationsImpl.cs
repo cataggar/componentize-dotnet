@@ -11,9 +11,10 @@ public class OperationsImpl : IOperations
     public static string ToUpper(string input) => input.ToUpperInvariant();
 
     // Real implementation using WASI HTTP client
-    public static string GetPrivateClouds(string subscription, string token)
+    public static string GetPrivateClouds(string subscription)
     {
         if (string.IsNullOrWhiteSpace(subscription)) return "{\"error\":\"missing-subscription\"}";
+        string? token = Environment.GetEnvironmentVariable("AZURE_TOKEN");
         if (string.IsNullOrWhiteSpace(token)) return "{\"error\":\"missing-token\"}";
         try
         {

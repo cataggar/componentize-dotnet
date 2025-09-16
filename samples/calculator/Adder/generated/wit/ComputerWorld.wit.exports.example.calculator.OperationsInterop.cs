@@ -44,10 +44,10 @@ namespace ComputerWorld.wit.exports.example.calculator
         }
 
         [UnmanagedCallersOnly(EntryPoint = "example:calculator/operations#get-private-clouds")]
-        public static unsafe nint wasmExportGetPrivateClouds(nint p0, int p1, nint p2, int p3) {
+        public static unsafe nint wasmExportGetPrivateClouds(nint p0, int p1) {
 
             string ret;
-            ret = OperationsImpl.GetPrivateClouds((Encoding.UTF8.GetString((byte*)p0, p1)), (Encoding.UTF8.GetString((byte*)p2, p3)));
+            ret = OperationsImpl.GetPrivateClouds((Encoding.UTF8.GetString((byte*)p0, p1)));
 
             var ptr = InteropReturnArea.returnArea.AddressOfReturnArea();
 

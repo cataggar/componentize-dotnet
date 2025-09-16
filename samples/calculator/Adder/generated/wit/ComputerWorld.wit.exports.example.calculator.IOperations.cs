@@ -9,6 +9,6 @@ public interface IOperations {
 
     static abstract string ToUpper(string input);
 
-    static abstract string GetPrivateClouds(string subscription, string token);
+    static abstract string GetPrivateClouds(string subscription);
 
 }
