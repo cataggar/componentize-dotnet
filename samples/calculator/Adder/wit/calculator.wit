@@ -6,6 +6,7 @@ interface operations {
 }
 
 world computer {
+  import wasi:http/outgoing-handler@0.2.0;
   export operations;
 }
 
