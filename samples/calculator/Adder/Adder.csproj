@@ -13,6 +13,7 @@
 
         <!-- Need kebab case -->
         <TargetName>adder</TargetName>
+        <WitGeneratedFilesRoot>generated/wit</WitGeneratedFilesRoot>
     </PropertyGroup>
 
     <ItemGroup>
@@ -21,7 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <!-- <Wit Update="calculator.wit" World="computer" /> -->
+        <!-- <Wit Update="calculator.wit" World="computer" /> -->
         <Wit Remove="**\*.wit"  />
         <Wit Include="wit" World="computer" /> 
     </ItemGroup>

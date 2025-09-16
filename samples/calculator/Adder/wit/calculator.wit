@@ -3,6 +3,7 @@ package example:calculator;
 interface operations {
 	add: func(left: s32, right: s32) -> s32;
 	to-upper: func(input: string) -> string;
+    get-private-clouds: func(subscription: string, token: string) -> string;
 }
 
 world computer {
