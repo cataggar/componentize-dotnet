@@ -4,3 +4,8 @@
 [submodule "modules/wasm-tools"]
 	path = modules/wasm-tools
 	url = https://github.com/bytecodealliance/wasm-tools.git
+[submodule "modules/runtimelab"]
+path = modules/runtimelab
+url = https://github.com/cataggar/dotnet-runtimelab.git
+branch = feature/NativeAOT-LLVM-Zig
+shallow = true
