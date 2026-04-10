@@ -1,4 +1,6 @@
 ﻿<Project>
+    <Import Project="BytecodeAlliance.Componentize.DotNet.ZigToolchain.targets" Condition="'$(UseZigToolchain)' == 'true'" />
+
     <PropertyGroup>
         <WitBindgenRuntime>native-aot</WitBindgenRuntime>
 
@@ -21,13 +23,13 @@
         MSBuild stuff to acquire the necessary SDKs (WASI SDK) automatically. It will take a few mins on the
         first build on a given machine, but after that should no-op.
     -->
-    <Target Name="PrepareWasmSdks" BeforeTargets="IlcCompile" DependsOnTargets="ObtainWasiSdk">
+    <Target Name="PrepareWasmSdks" BeforeTargets="IlcCompile" DependsOnTargets="ObtainWasiSdk" Condition="'$(UseZigToolchain)' != 'true'">
         <PropertyGroup>
             <WASI_SDK_PATH>$(WasiSdkRoot)</WASI_SDK_PATH>
         </PropertyGroup>
     </Target>
 
-    <Target Name="ObtainWasiSdk" Condition="!(Exists($(WasiSdkRoot)))">
+    <Target Name="ObtainWasiSdk" Condition="'$(UseZigToolchain)' != 'true' and !(Exists($(WasiSdkRoot)))">
         <PropertyGroup>
             <WasiSdkDownloadTempDir>$([System.IO.Path]::Combine($([System.IO.Path]::GetTempPath()), $([System.IO.Path]::GetRandomFileName())))</WasiSdkDownloadTempDir>
         </PropertyGroup>
