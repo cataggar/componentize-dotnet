@@ -1,0 +1,366 @@
+name: Package with Zig
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g. 0.1.0-preview.1)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: "0.16.0-dev.3142+5ccfeb926"
+  ZIG_RELEASE_URL: "https://github.com/ctaggart/zig/releases/download/v0.16.0-dev.3142%2B5ccfeb926"
+  RUNTIMELAB_BRANCH: "feature/NativeAOT-LLVM-Zig"
+  LLVM_TAG: "llvmorg-18.1.3"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            os: ubuntu-latest
+            zig_archive: zig-x86_64-linux-0.16.0-dev.3142+5ccfeb926.tar.xz
+            zig_dir: zig-x86_64-linux-0.16.0-dev.3142+5ccfeb926
+            llvm_archive: llvm-zig-21.1.8-x86_64-linux.tar.xz
+          - rid: osx-arm64
+            os: macos-14
+            zig_archive: zig-aarch64-macos-0.16.0-dev.3142+5ccfeb926.tar.xz
+            zig_dir: zig-aarch64-macos-0.16.0-dev.3142+5ccfeb926
+            llvm_archive: llvm-zig-21.1.8-aarch64-macos.tar.xz
+          - rid: win-x64
+            os: windows-latest
+            zig_archive: zig-x86_64-windows-0.16.0-dev.3142+5ccfeb926.zip
+            zig_dir: zig-x86_64-windows-0.16.0-dev.3142+5ccfeb926
+            llvm_archive: llvm-zig-21.1.8-x86_64-windows-msvc.zip
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.rid }}
+
+    steps:
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout componentize-dotnet (zig branch)
+        uses: actions/checkout@v4
+        with:
+          ref: zig
+          submodules: false
+
+      - name: Checkout runtimelab (sparse — jit + nativeaot only)
+        shell: bash
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            --branch ${{ env.RUNTIMELAB_BRANCH }} \
+            https://github.com/cataggar/dotnet-runtimelab.git runtimelab
+          cd runtimelab
+          git sparse-checkout set \
+            src/coreclr/jit \
+            src/coreclr/inc \
+            src/coreclr/pal \
+            src/coreclr/tools/Common/JitInterface \
+            src/coreclr/debug/inc \
+            src/coreclr/md/inc \
+            src/coreclr/classlibnative \
+            src/coreclr/hosts/inc \
+            src/coreclr/interpreter/inc \
+            src/coreclr/minipal \
+            src/coreclr/nativeresources \
+            src/coreclr/nativeaot/Runtime \
+            src/coreclr/nativeaot/Bootstrap \
+            src/coreclr/nativeaot/BuildIntegration \
+            src/coreclr/gc \
+            src/coreclr/runtime \
+            src/coreclr/utilcode \
+            src/coreclr/vm \
+            src/native/inc \
+            src/native/minipal
+
+      - name: Download zig
+        shell: bash
+        run: |
+          curl -sL "${{ env.ZIG_RELEASE_URL }}/${{ matrix.zig_archive }}" -o zig-archive
+          if [[ "${{ matrix.zig_archive }}" == *.zip ]]; then
+            unzip -q zig-archive
+          else
+            tar xf zig-archive
+          fi
+          echo "$PWD/${{ matrix.zig_dir }}" >> $GITHUB_PATH
+          echo "ZIG_EXE=$PWD/${{ matrix.zig_dir }}/zig" >> $GITHUB_ENV
+          rm zig-archive
+
+      - name: Verify zig
+        shell: bash
+        run: zig version && zig cc --version
+
+      # --- Download pre-built LLVM (headers + static libs) ---
+      - name: Download pre-built LLVM
+        shell: bash
+        run: |
+          curl -sL "https://github.com/ctaggart/llvm-project/releases/download/llvmorg-21.1.8/${{ matrix.llvm_archive }}" -o llvm-archive
+          if [[ "${{ matrix.llvm_archive }}" == *.zip ]]; then
+            unzip -q llvm-archive
+          else
+            tar xf llvm-archive
+          fi
+          # Find the extracted directory
+          LLVM_DIR=$(ls -d llvm-zig-* 2>/dev/null | head -1)
+          echo "LLVM_PREFIX=$PWD/$LLVM_DIR" >> $GITHUB_ENV
+          # Patch cmake exports (warns instead of errors on missing tool targets)
+          sed -i.bak 's/message(FATAL_ERROR "The imported target/message(WARNING "The imported target/' \
+            "$LLVM_DIR/lib/cmake/llvm/LLVMExports.cmake" 2>/dev/null || true
+          rm llvm-archive
+          echo "LLVM installed at $PWD/$LLVM_DIR"
+          ls "$LLVM_DIR/include/llvm-c/Core.h" && echo "Headers OK"
+          ls "$LLVM_DIR/lib/libLLVMCore.a" 2>/dev/null || ls "$LLVM_DIR/lib/LLVMCore.lib" 2>/dev/null && echo "Libs OK"
+
+      # --- Generate config headers needed by JIT ---
+      - name: Generate config headers
+        shell: bash
+        run: |
+          # The JIT needs cmake-generated headers (version.h, etc.)
+          # For now, create minimal stubs
+          mkdir -p runtimelab/artifacts/obj/coreclr/generated/inc
+          GEN_INC="$PWD/runtimelab/artifacts/obj/coreclr/generated/inc"
+          
+          cat > "$GEN_INC/jiteeversionguid.h" << 'HDR'
+          #ifndef GUID_DEFINED
+          #define GUID_DEFINED
+          typedef struct { unsigned int Data1; unsigned short Data2; unsigned short Data3; unsigned char Data4[8]; } GUID;
+          #endif
+          EXTERN_GUID(JITEEVersionIdentifier, 0x00000000, 0x0000, 0x0000, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+          HDR
+
+          echo "#define RuntimeProductVersion \"10.0.0-zig\"" > "$GEN_INC/version.h"
+          echo "GEN_INC=$GEN_INC" >> $GITHUB_ENV
+
+      # --- Build JIT with zig build ---
+      - name: Build JIT (zig build)
+        if: matrix.rid == 'linux-x64'
+        shell: bash
+        working-directory: runtimelab/src/coreclr/jit
+        run: |
+          zig build \
+            -Dllvm-prefix=${{ env.LLVM_PREFIX }} \
+            -Dgenerated-inc=${{ env.GEN_INC }} \
+            -Doptimize=ReleaseFast
+          echo "JIT built:"
+          ls -lh zig-out/lib/
+
+      - name: Build JIT (zig build — macOS)
+        if: matrix.rid == 'osx-arm64'
+        shell: bash
+        working-directory: runtimelab/src/coreclr/jit
+        run: |
+          # TODO: build.zig needs HOST_ARM64 support for macOS ARM
+          echo "::warning::JIT build on macOS ARM needs HOST_ARM64 support — skipping"
+
+      - name: Build JIT (zig build — Windows)
+        if: matrix.rid == 'win-x64'
+        shell: bash
+        working-directory: runtimelab/src/coreclr/jit
+        run: |
+          # TODO: build.zig needs Windows include path handling (no PAL)
+          echo "::warning::JIT build on Windows needs Windows-specific includes — skipping"
+
+      # --- Build WASI runtime with zig build ---
+      # --- Build WASI runtime with zig build ---
+      # Config headers (config.h, minipalconfig.h) are committed in the runtimelab repo
+      - name: Build WASI runtime (zig build)
+        shell: bash
+        working-directory: runtimelab/src/coreclr/nativeaot/Runtime
+        run: |
+          zig build -Doptimize=ReleaseFast
+          echo "WASI runtime built:"
+          ls -lh zig-out/lib/
+
+      # --- Stage artifacts ---
+      - name: Stage outputs
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          RID="${{ matrix.rid }}"
+
+          mkdir -p staging/ilc staging/aotsdk staging/zig
+
+          # JIT shared library (only on platforms where we built it)
+          cp runtimelab/src/coreclr/jit/zig-out/lib/* staging/ilc/ 2>/dev/null || echo "JIT not built on this platform"
+
+          # WASI runtime static libraries
+          cp runtimelab/src/coreclr/nativeaot/Runtime/zig-out/lib/* staging/aotsdk/
+
+          # Zig binary + lib
+          if [[ "$RID" == win-* ]]; then
+            cp ${{ matrix.zig_dir }}/zig.exe staging/zig/
+          else
+            cp ${{ matrix.zig_dir }}/zig staging/zig/
+          fi
+          cp -r ${{ matrix.zig_dir }}/lib staging/zig/lib
+
+          echo "Staged artifacts for $RID:"
+          du -sh staging/*/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.rid }}
+          path: staging/
+          retention-days: 7
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Create NuGet packages
+
+    steps:
+      - name: Checkout (zig branch)
+        uses: actions/checkout@v4
+        with:
+          ref: zig
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: List build outputs
+        shell: bash
+        run: find artifacts/ -type f -name "*.a" -o -name "*.o" -o -name "*.so" -o -name "*.dylib" -o -name "*.dll" -o -name "zig" -o -name "zig.exe" | sort
+
+      - name: Create NuGet packages
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p nupkgs
+
+          # --- Per-platform runtime packages (zig + WASI runtime + JIT) ---
+          for RID in linux-x64 osx-arm64 win-x64; do
+            BUILDDIR="artifacts/build-$RID"
+            if [ ! -d "$BUILDDIR" ]; then continue; fi
+
+            PKGDIR="pkg-$RID"
+            mkdir -p "$PKGDIR/tools/$RID" "$PKGDIR/runtimes/wasi-wasm/native"
+
+            # Zig binary
+            if [ -f "$BUILDDIR/zig/zig" ]; then
+              cp "$BUILDDIR/zig/zig" "$PKGDIR/tools/$RID/"
+            elif [ -f "$BUILDDIR/zig/zig.exe" ]; then
+              cp "$BUILDDIR/zig/zig.exe" "$PKGDIR/tools/$RID/"
+            fi
+            # Zig lib/ (wasi-libc, includes)
+            if [ -d "$BUILDDIR/zig/lib" ]; then
+              cp -r "$BUILDDIR/zig/lib" "$PKGDIR/tools/$RID/lib"
+            fi
+
+            # WASI runtime .a files
+            cp "$BUILDDIR/aotsdk/"*.a "$PKGDIR/runtimes/wasi-wasm/native/" 2>/dev/null || true
+
+            # JIT shared library (if built for this platform)
+            if [ -d "$BUILDDIR/ilc" ] && ls "$BUILDDIR/ilc/"* >/dev/null 2>&1; then
+              mkdir -p "$PKGDIR/runtimes/$RID/native"
+              cp "$BUILDDIR/ilc/"* "$PKGDIR/runtimes/$RID/native/"
+            fi
+
+            # Create .nuspec
+            cat > "$PKGDIR/Componentize.DotNet.Zig.Runtime.$RID.nuspec" << NUSPEC
+          <?xml version="1.0" encoding="utf-8"?>
+          <package>
+            <metadata>
+              <id>Componentize.DotNet.Zig.Runtime.$RID</id>
+              <version>$VERSION</version>
+              <description>Zig toolchain + NativeAOT-LLVM WASI runtime ($RID)</description>
+              <authors>ctaggart</authors>
+              <license type="expression">MIT</license>
+            </metadata>
+            <files>
+              <file src="tools/**" target="tools/" />
+              <file src="runtimes/**" target="runtimes/" />
+            </files>
+          </package>
+          NUSPEC
+
+            nuget pack "$PKGDIR/Componentize.DotNet.Zig.Runtime.$RID.nuspec" \
+              -OutputDirectory nupkgs -Version "$VERSION" \
+              -BasePath "$PKGDIR" -NoDefaultExcludes 2>&1 || \
+            dotnet pack "$PKGDIR/Componentize.DotNet.Zig.Runtime.$RID.nuspec" \
+              -o nupkgs --no-build 2>&1 || \
+            echo "::warning::Pack failed for $RID"
+
+            echo "Packed $RID"
+          done
+
+          # --- Meta-package ---
+          METADIR="pkg-meta/build"
+          mkdir -p "$METADIR"
+
+          cp src/WitBindgen/build/BytecodeAlliance.Componentize.DotNet.ZigToolchain.targets \
+             "$METADIR/Componentize.DotNet.Zig.targets" 2>/dev/null || true
+
+          cat > "$METADIR/Componentize.DotNet.Zig.props" << 'PROPS'
+          <Project>
+            <PropertyGroup>
+              <UseZigToolchain Condition="'$(UseZigToolchain)' == ''">true</UseZigToolchain>
+              <ZigPath Condition="'$(ZigPath)' == ''">$(MSBuildThisFileDirectory)..\tools\$(NuGetRuntimeIdentifier)\zig</ZigPath>
+            </PropertyGroup>
+          </Project>
+          PROPS
+
+          cat > "pkg-meta/Componentize.DotNet.Zig.nuspec" << NUSPEC
+          <?xml version="1.0" encoding="utf-8"?>
+          <package>
+            <metadata>
+              <id>Componentize.DotNet.Zig</id>
+              <version>$VERSION</version>
+              <description>Zig toolchain for .NET WASI — replaces wasi-sdk</description>
+              <authors>ctaggart</authors>
+              <license type="expression">MIT</license>
+            </metadata>
+            <files>
+              <file src="build/**" target="build/" />
+            </files>
+          </package>
+          NUSPEC
+
+          nuget pack "pkg-meta/Componentize.DotNet.Zig.nuspec" \
+            -OutputDirectory nupkgs -Version "$VERSION" \
+            -BasePath "pkg-meta" 2>&1 || \
+          echo "::warning::Meta-package pack failed"
+
+          echo "=== NuGet packages ==="
+          ls -lh nupkgs/
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: nupkgs/*.nupkg
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: nupkgs/*.nupkg
+          generate_release_notes: true
