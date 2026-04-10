@@ -9,6 +9,9 @@
 		<InvariantGlobalization>true</InvariantGlobalization>
 		<SelfContained>true</SelfContained>
 
+		<!-- Use zig as the WASI toolchain by default (replaces ~400MB wasi-sdk download) -->
+		<UseZigToolchain Condition="'$(UseZigToolchain)' == ''">true</UseZigToolchain>
+
 		<ToolsTarget Condition="$([MSBuild]::IsOSPlatform('Windows'))">win</ToolsTarget>
 		<ToolsTarget Condition="$([MSBuild]::IsOSPlatform('Linux'))">linux</ToolsTarget>
 		<ToolsTarget Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx</ToolsTarget>
