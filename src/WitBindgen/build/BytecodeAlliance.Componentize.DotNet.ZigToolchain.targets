@@ -2,59 +2,64 @@
   <!--
     Zig toolchain integration for componentize-dotnet.
     When UseZigToolchain=true, replaces wasi-sdk with zig for WASI compilation and linking.
-    Zig must be on PATH. This eliminates the ~400MB wasi-sdk download.
+    Zig must be on PATH or set via ZigPath. Eliminates the ~400MB wasi-sdk download.
+
+    Works with the UseZigToolchain support in Microsoft.NETCore.Native.targets from
+    dotnet/runtimelab (feature/NativeAOT-LLVM-Zig branch).
   -->
   <PropertyGroup Condition="'$(UseZigToolchain)' == 'true'">
-    <ZigExe Condition="'$(ZigExe)' == ''">zig</ZigExe>
-    <_ZigTarget>wasm32-wasi</_ZigTarget>
+    <!-- ZigPath = full path to zig binary; ZigExe = zig command for Exec tasks -->
+    <ZigPath Condition="'$(ZigPath)' == ''">zig</ZigPath>
+    <ZigExe Condition="'$(ZigExe)' == ''">$(ZigPath)</ZigExe>
   </PropertyGroup>
 
   <!--
-    Override the WASI SDK initialization from Microsoft.NETCore.Native.Wasm.targets.
-    We set CppCompiler/CppLinker/CppLibCreator to zig equivalents BEFORE the NativeAOT
-    targets run, so the _InitializeWasiSdk target's error about missing WASI_SDK_PATH
-    is avoided.
+    Set WASI_SDK_PATH to a sentinel value so the NativeAOT _InitializeWasiSdk target
+    doesn't error. When the runtimelab targets have UseZigToolchain support,
+    _InitializeZigToolchain runs instead and this sentinel is ignored.
+    For runtimelab builds WITHOUT the zig patch, _InitializeWasiSdk will run but
+    CppCompiler/CppLinker are already set by our target below, so it's a no-op.
   -->
-  <Target Name="_InitializeZigToolchain"
-          BeforeTargets="_InitializeWasiSdk;SetupOSSpecificProps;PrepareWasmSdks"
+  <Target Name="_InitializeZigToolchainForComponentize"
+          BeforeTargets="_InitializeWasiSdk;_InitializeZigToolchain;SetupOSSpecificProps;PrepareWasmSdks"
           Condition="'$(UseZigToolchain)' == 'true' and '$(_targetOS)' == 'wasi'">
 
-    <!-- Verify zig is available -->
-    <Exec Command="$(ZigExe) version" ConsoleToMSBuild="true" StandardOutputImportance="low">
+    <Exec Command="&quot;$(ZigExe)&quot; version" ConsoleToMSBuild="true" StandardOutputImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="_ZigVersion" />
     </Exec>
-    <Message Importance="high" Text="Using Zig $(ZigVersion) as WASI toolchain (replacing wasi-sdk)" />
+    <Message Importance="high" Text="Using Zig $(_ZigVersion) as WASI toolchain (replacing wasi-sdk)" />
 
     <PropertyGroup>
-      <!-- zig cc/c++ acts as clang with bundled sysroot + musl libc -->
-      <CppCompiler>$(ZigExe) cc -target $(_ZigTarget)</CppCompiler>
-      <CppLinker>$(ZigExe) cc -target $(_ZigTarget)</CppLinker>
-      <CppLibCreator>$(ZigExe) ar</CppLibCreator>
+      <!-- Set CppCompiler for .bc → .o compilation (zig cc) -->
+      <CppCompiler Condition="'$(CppCompiler)' == ''">&quot;$(ZigExe)&quot; cc</CppCompiler>
+      <!-- Set CppLinker for final link (zig wasm-ld, NOT zig cc — zig cc blocks --allow-undefined etc.) -->
+      <CppLinker Condition="'$(CppLinker)' == ''">&quot;$(ZigExe)&quot; wasm-ld</CppLinker>
+      <CppLibCreator Condition="'$(CppLibCreator)' == ''">&quot;$(ZigExe)&quot; ar</CppLibCreator>
 
-      <!-- Prevent the NativeAOT targets from erroring about missing WASI_SDK_PATH -->
-      <WASI_SDK_PATH>zig-provided</WASI_SDK_PATH>
+      <!-- Prevent _InitializeWasiSdk from erroring about missing WASI_SDK_PATH -->
+      <WASI_SDK_PATH Condition="'$(WASI_SDK_PATH)' == ''">zig-provided</WASI_SDK_PATH>
     </PropertyGroup>
   </Target>
 
   <!--
-    Adjust linker flags for zig's wasm-ld.
-    zig's lld doesn't support all the same flags as wasi-sdk's wasm-ld.
+    Adjust linker flags for zig wasm-ld.
+    The NativeAOT targets generate flags for clang (with -Wl, prefix).
+    If the runtimelab targets have UseZigToolchain support, they already
+    generate correct wasm-ld flags. This target handles the case where
+    they don't (older NuGet package without the zig patch).
   -->
   <Target Name="_AdjustZigLinkerFlags"
           BeforeTargets="LinkNativeLlvm"
           Condition="'$(UseZigToolchain)' == 'true' and '$(_targetOS)' == 'wasi'">
     <ItemGroup>
-      <!-- zig's lld does not support the warn-unresolved-symbols flag; remove it -->
+      <!-- Remove flags that zig wasm-ld doesn't support when passed via clang -->
       <CustomLinkerArg Remove="-Wl,--warn-unresolved-symbols" />
-
-      <!-- zig auto-defines _WASI_EMULATED_* macros when the lwasi-emulated-* libs are linked,
-           but we also need them during compilation of any .c/.cpp files -->
       <CustomLinkerArg Remove="-lwasi-emulated-pthread" />
+      <CustomLinkerArg Remove="-lstdc++;-lwasi-emulated-process-clocks;-lwasi-emulated-signal;-lwasi-emulated-mman;-lwasi-emulated-getpid" />
+      <!-- Remove clang-only flags that don't apply to wasm-ld -->
+      <CustomLinkerArg Remove="-target wasm32-unknown-wasip2" />
+      <CustomLinkerArg Remove="-target $(IlcLlvmTarget)" />
+      <CustomLinkerArg Remove="-fuse-ld=lld" />
     </ItemGroup>
   </Target>
-
-  <!--
-    Skip the ObtainWasiSdk download target when using zig.
-    (Handled by conditions on PrepareWasmSdks and ObtainWasiSdk in WitBindgen.targets)
-  -->
 </Project>
